@@ -230,7 +230,7 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉偵測 (OpenCV Haar-Cascade 自動防呆與線上下載)
+        # Tab 3: 人臉偵測 (OpenCV Haar-Cascade 靜態載入防呆)
         # ---------------------------------------------------------
         with face_tab:
             st.subheader("OpenCV Haar-Cascade 人臉偵測模組")
@@ -241,45 +241,36 @@ else:
             annotated_img = img_np.copy()
             gray_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
 
-            # 嘗試載入 Haar-Cascade 模型的防呆機制
+            # 優先讀取本地項目資料夾下的 xml 檔案
             import os
-            import urllib.request
-
             xml_filename = "haarcascade_frontalface_default.xml"
-            xml_url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
             
-            cascade_path = None
-            # 1. 優先嘗試官方 cv2.data 路徑
-            if hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades'):
-                possible_path = os.path.join(cv2.data.haarcascades, xml_filename)
-                if os.path.exists(possible_path):
-                    cascade_path = possible_path
+            if os.path.exists(xml_filename) and os.path.getsize(xml_filename) > 0:
+                face_cascade = cv2.CascadeClassifier(xml_filename)
+            elif hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades'):
+                face_cascade = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, xml_filename))
+            else:
+                face_cascade = cv2.CascadeClassifier()
 
-            # 2. 若系統無預設路徑，自動下載並快取至本地專案目錄
-            if cascade_path is None:
-                if not os.path.exists(xml_filename):
-                    try:
-                        urllib.request.urlretrieve(xml_url, xml_filename)
-                    except Exception as e:
-                        st.error(f"下載 Haar-Cascade 模型檔失敗: {e}")
-                cascade_path = xml_filename
-
-            face_cascade = cv2.CascadeClassifier(cascade_path)
-            faces = face_cascade.detectMultiScale(gray_img, scaleFactor=scale_factor, minNeighbors=min_neighbors, minSize=(30, 30))
-
-            face_count = len(faces)
+            face_count = 0
             face_details = []
 
-            for idx, (x, y, w, h) in enumerate(faces):
-                cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (0, 255, 0), 3)
-                label = f"Face #{idx+1}"
-                cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            if not face_cascade.empty():
+                faces = face_cascade.detectMultiScale(gray_img, scaleFactor=scale_factor, minNeighbors=min_neighbors, minSize=(30, 30))
+                face_count = len(faces)
 
-                face_details.append({
-                    "人臉編號": idx + 1,
-                    "辨識模型": "Haar-Cascade Feature Detector",
-                    "邊界框 (x, y, w, h)": f"({x}, {y}, {w}, {h})"
-                })
+                for idx, (x, y, w, h) in enumerate(faces):
+                    cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                    label = f"Face #{idx+1}"
+                    cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                    face_details.append({
+                        "人臉編號": idx + 1,
+                        "辨識模型": "Haar-Cascade Feature Detector",
+                        "邊界框 (x, y, w, h)": f"({x}, {y}, {w}, {h})"
+                    })
+            else:
+                st.error("⚠️ 無法載入 Haar-Cascade 權重模型檔，請確認專案根目錄下存在 haarcascade_frontalface_default.xml。")
 
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
@@ -291,4 +282,4 @@ else:
                 else:
                     st.warning("未偵測到人臉，可嘗試調低 Min Neighbors 或換張正面清晰的照片。")
 
-            st.caption("🤖 演算法說明：本模組採用經典 Haar-Cascade 物件檢測演算法，具備模型自動下載與跨平台相容機制。")
+            st.caption("🤖 演算法說明：本模組採用經典 Haar-Cascade 物件檢測演算法，直接打包模型權重於專案中，確保 100% 離線穩定運作。")
