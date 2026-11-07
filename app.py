@@ -248,13 +248,14 @@ else:
             except Exception as e:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
-        # ---------------------------------------------------------
+       # ---------------------------------------------------------
         # Tab 3: 人臉偵測 (OpenCV ONNX YuNet 深度學習模型)
         # ---------------------------------------------------------
         with face_tab:
             st.subheader("OpenCV ONNX YuNet AI 人臉偵測模組")
 
-            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.1, 1.0, 0.5, 0.05)
+            # 固定黃金信心門檻 0.50，移除手動滾輪以保證一次性高精準辨識
+            conf_threshold = 0.50
 
             annotated_img = img_np.copy()
             # OpenCV FaceDetectorYN 接收 BGR 格式
@@ -310,4 +311,4 @@ else:
                 if face_count > 0:
                     st.dataframe(face_details)
                 else:
-                    st.warning("未偵測到人臉，可嘗試調低置信度門檻。")
+                    st.warning("未偵測到人臉。")
