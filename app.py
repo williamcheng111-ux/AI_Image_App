@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import math
+import os
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -230,56 +231,90 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉偵測 (OpenCV Haar-Cascade 靜態載入防呆)
+        # Tab 3: 人臉偵測 (安全強化型 OpenCV 偵測機制)
         # ---------------------------------------------------------
         with face_tab:
-            st.subheader("OpenCV Haar-Cascade 人臉偵測模組")
+            st.subheader("OpenCV 人臉 / 區域特徵偵測模組")
 
-            scale_factor = st.slider("調整檢測縮放倍率 (Scale Factor)", 1.05, 1.50, 1.10, 0.05, help="數值越小檢測越精細，但速度稍慢")
-            min_neighbors = st.slider("調整相鄰矩形門檻 (Min Neighbors)", 1, 10, 5, 1, help="數值越高越嚴格，可減少誤判")
+            scale_factor = st.slider("調整檢測縮放倍率 (Scale Factor)", 1.05, 1.50, 1.10, 0.05, help="數值越小檢測越精細")
+            min_neighbors = st.slider("調整相鄰矩形門檻 (Min Neighbors)", 1, 10, 5, 1, help="數值越高越嚴格，減少誤判")
 
             annotated_img = img_np.copy()
             gray_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
 
-            # 優先讀取本地項目資料夾下的 xml 檔案
-            import os
-            xml_filename = "haarcascade_frontalface_default.xml"
-            
-            if os.path.exists(xml_filename) and os.path.getsize(xml_filename) > 0:
-                face_cascade = cv2.CascadeClassifier(xml_filename)
-            elif hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades'):
-                face_cascade = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, xml_filename))
-            else:
-                face_cascade = cv2.CascadeClassifier()
-
             face_count = 0
             face_details = []
 
-            if not face_cascade.empty():
-                faces = face_cascade.detectMultiScale(gray_img, scaleFactor=scale_factor, minNeighbors=min_neighbors, minSize=(30, 30))
+            # 嘗試安全創建 CascadeClassifier
+            cascade_loaded = False
+            face_cascade = cv2.CascadeClassifier()
+
+            xml_filename = "haarcascade_frontalface_default.xml"
+            search_paths = [
+                xml_filename,
+                os.path.join(os.path.dirname(__file__), xml_filename) if '__file__' in globals() else xml_filename,
+            ]
+            
+            if hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades'):
+                search_paths.append(os.path.join(cv2.data.haarcascades, xml_filename))
+
+            for path in search_paths:
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    try:
+                        if face_cascade.load(path):
+                            cascade_loaded = True
+                            break
+                    except Exception:
+                        continue
+
+            if cascade_loaded and not face_cascade.empty():
+                faces = face_cascade.detectMultiScale(
+                    gray_img, 
+                    scaleFactor=scale_factor, 
+                    minNeighbors=int(min_neighbors), 
+                    minSize=(30, 30)
+                )
                 face_count = len(faces)
 
                 for idx, (x, y, w, h) in enumerate(faces):
-                    cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                    cv2.rectangle(annotated_img, (int(x), int(y)), (int(x + w), int(y + h)), (0, 255, 0), 3)
                     label = f"Face #{idx+1}"
-                    cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(annotated_img, label, (int(x), max(int(y) - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                     face_details.append({
                         "人臉編號": idx + 1,
-                        "辨識模型": "Haar-Cascade Feature Detector",
+                        "辨識模型": "Haar-Cascade Detector",
                         "邊界框 (x, y, w, h)": f"({x}, {y}, {w}, {h})"
                     })
+                st.caption("🤖 偵測技術：OpenCV Haar-Cascade 機器學習人臉特徵檢測")
             else:
-                st.error("⚠️ 無法載入 Haar-Cascade 權重模型檔，請確認專案根目錄下存在 haarcascade_frontalface_default.xml。")
+                # 備用安全方案：膚色與輪廓檢測演算法 (確保雲端 100% 安定不會崩潰)
+                hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
+                lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+                upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+                mask = cv2.inRange(hsv, lower_skin, upper_skin)
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                for idx, cnt in enumerate(contours):
+                    area = cv2.contourArea(cnt)
+                    if area > (width * height * 0.02):
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (255, 165, 0), 3)
+                        cv2.putText(annotated_img, f"Region #{face_count+1}", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+                        face_count += 1
+                        face_details.append({
+                            "區域編號": face_count,
+                            "辨識模型": "Color-based Skin Region Detector",
+                            "邊界框 (x, y, w, h)": f"({x}, {y}, {w}, {h})"
+                        })
+                st.caption("🤖 偵測技術：彩色人臉膚色輪廓特徵分析 (雲端安全備用模式)")
 
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
-                st.image(annotated_img, caption="人臉偵測標註圖 (Haar-Cascade Bounding Boxes)", use_container_width=True)
+                st.image(annotated_img, caption="人臉/目標特徵標註圖", use_container_width=True)
             with col_f2:
-                st.metric("偵測到的總人臉數量", f"{face_count} 人")
+                st.metric("偵測到的總目標數量", f"{face_count} 個")
                 if face_count > 0:
                     st.dataframe(face_details)
                 else:
-                    st.warning("未偵測到人臉，可嘗試調低 Min Neighbors 或換張正面清晰的照片。")
-
-            st.caption("🤖 演算法說明：本模組採用經典 Haar-Cascade 物件檢測演算法，直接打包模型權重於專案中，確保 100% 離線穩定運作。")
+                    st.warning("未偵測到明顯人臉或區域，可嘗試調整照片或降低門檻。")
