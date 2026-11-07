@@ -44,27 +44,30 @@ def load_image(file_bytes: bytes) -> tuple[Image.Image, int, np.ndarray]:
         return source_image.copy(), channels, img_np
 
 
-def get_haar_cascade_detector():
-    """下載並載入 Haar-Cascade 模型的強健函式"""
-    xml_name = "haarcascade_frontalface_default.xml"
-    xml_url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
-    
-    # 檢查並下載模型檔
-    if not os.path.exists(xml_name) or os.path.getsize(xml_name) < 1000:
-        try:
-            req = urllib.request.Request(xml_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response, open(xml_name, 'wb') as out_file:
-                out_file.write(response.read())
-        except Exception:
-            pass
+@st.cache_resource
+def load_ssd_dnn_detector():
+    """下載並載入高穩定度 OpenCV DNN ResNet-10 SSD 人臉偵測模型。"""
+    proto_url = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
+    model_url = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
 
-    # 載入 CascadeClassifier
-    if os.path.exists(xml_name):
-        detector = cv2.CascadeClassifier(os.path.abspath(xml_name))
-        if not detector.empty():
-            return detector
-            
-    return None
+    proto_path = "deploy.prototxt"
+    model_path = "res10_300x300_ssd_iter_140000.caffemodel"
+
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    if not os.path.exists(proto_path) or os.path.getsize(proto_path) < 100:
+        req = urllib.request.Request(proto_url, headers=headers)
+        with urllib.request.urlopen(req) as resp, open(proto_path, 'wb') as f:
+            f.write(resp.read())
+
+    if not os.path.exists(model_path) or os.path.getsize(model_path) < 10000:
+        req = urllib.request.Request(model_url, headers=headers)
+        with urllib.request.urlopen(req) as resp, open(model_path, 'wb') as f:
+            f.write(resp.read())
+
+    # 使用 universal 的 cv2.dnn.readNet
+    net = cv2.dnn.readNet(proto_path, model_path)
+    return net
 
 
 # 頁面設定
@@ -83,7 +86,7 @@ st.title("📷 基於 AI 輔助之互動式影像處理與人臉分析工具")
 
 # 預先建立四大分頁
 basic_tab, color_tab, convolution_tab, face_tab = st.tabs([
-    "基礎資訊", "1. 色彩空間與動態直方圖", "2. 自訂卷積與 PSNR", "3. 人臉偵測"
+    "基礎資訊", "1. 色彩空間與動態直方圖", "2. 自訂卷積與 PSNR", "3. AI 人臉偵測"
 ])
 
 if uploaded_file is None:
@@ -255,49 +258,53 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉偵測 (OpenCV Haar-Cascade 經典特徵辨識演算法)
+        # Tab 3: 人臉偵測 (OpenCV DNN ResNet-10 SSD 模型)
         # ---------------------------------------------------------
         with face_tab:
-            st.subheader("OpenCV Haar-Cascade AI 人臉偵測模組")
+            st.subheader("OpenCV DNN 深度學習人臉偵測模組")
 
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                scale_factor = st.slider("調整檢測縮放倍率 (Scale Factor)", 1.05, 1.40, 1.10, 0.05, help="越小越精細")
-            with col_s2:
-                min_neighbors = st.slider("調整相鄰矩形門檻 (Min Neighbors)", 1, 10, 4, 1, help="越大越嚴格")
+            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.1, 1.0, 0.45, 0.05)
             
             annotated_img = img_np.copy()
-            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-            # 直方圖均化強化人臉對比
-            gray = cv2.equalizeHist(gray)
-
-            detector = get_haar_cascade_detector()
             face_count = 0
             face_details = []
 
-            if detector is not None:
-                faces = detector.detectMultiScale(
-                    gray,
-                    scaleFactor=scale_factor,
-                    minNeighbors=int(min_neighbors),
-                    minSize=(40, 40)
+            try:
+                net = load_ssd_dnn_detector()
+                
+                # 影像轉換成 300x300 的 Blob 送入 DNN
+                blob = cv2.dnn.blobFromImage(
+                    cv2.resize(img_np, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
                 )
+                net.setInput(blob)
+                detections = net.forward()
 
-                face_count = len(faces)
-                for idx, (x, y, bw, bh) in enumerate(faces):
-                    # 畫人臉邊界框
-                    cv2.rectangle(annotated_img, (x, y), (x + bw, y + bh), (0, 255, 0), 3)
-                    label = f"Face #{idx+1}"
-                    cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                for i in range(0, detections.shape[2]):
+                    confidence = detections[0, 0, i, 2]
 
-                    face_details.append({
-                        "人臉編號": idx + 1,
-                        "演算法模型": "OpenCV Haar-Cascade Detector",
-                        "邊界框 (x, y, w, h)": f"({x}, {y}, {bw}, {bh})"
-                    })
-                st.caption("🤖 偵測技術：OpenCV Haar-Cascade 人臉特徵檢測演算法")
-            else:
-                st.error("無法載入人臉偵測模型。")
+                    if confidence > conf_threshold:
+                        face_count += 1
+                        box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
+                        (xmin, ymin, xmax, ymax) = box.astype("int")
+
+                        # 邊界限制
+                        xmin, ymin = max(0, xmin), max(0, ymin)
+                        xmax, ymax = min(width, xmax), min(height, ymax)
+                        bw, bh = xmax - xmin, ymax - ymin
+
+                        cv2.rectangle(annotated_img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
+                        label = f"Face #{face_count}: {confidence*100:.1f}%"
+                        cv2.putText(annotated_img, label, (xmin, max(ymin - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                        face_details.append({
+                            "人臉編號": face_count,
+                            "置信度 (Confidence)": f"{confidence*100:.2f}%",
+                            "邊界框 (x, y, w, h)": f"({xmin}, {ymin}, {bw}, {bh})"
+                        })
+                st.caption("🤖 偵測技術：OpenCV Deep Neural Network (ResNet-10 SSD Face Detector)")
+
+            except Exception as e:
+                st.error(f"⚠️ 模型執行失敗：{e}")
 
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
@@ -307,4 +314,4 @@ else:
                 if face_count > 0:
                     st.dataframe(face_details)
                 else:
-                    st.warning("未偵測到人臉，可嘗試調低 Min Neighbors 門檻。")
+                    st.warning("未偵測到人臉，可嘗試調低置信度門檻。")
