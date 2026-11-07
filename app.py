@@ -64,7 +64,7 @@ st.set_page_config(page_title="AI 互動式影像處理與人臉分析工具", p
 
 # 側邊欄
 with st.sidebar:
-    st.header("1. 影像載入與解析")
+    st.header("影像載入與解析")
     uploaded_file = st.file_uploader(
         "選擇圖片",
         type=list(ALLOWED_EXTENSIONS),
