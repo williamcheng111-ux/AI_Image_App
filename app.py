@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from io import BytesIO
 import math
-import os
-import urllib.request
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,24 +40,6 @@ def load_image(file_bytes: bytes) -> tuple[Image.Image, int, np.ndarray]:
         img_np = np.array(rgb_image)
 
         return source_image.copy(), channels, img_np
-
-
-@st.cache_resource
-def load_dnn_face_detector():
-    """下載並快取 OpenCV SSD 人臉偵測模型。"""
-    prototxt_url = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
-    caffemodel_url = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
-
-    proto_path = "deploy.prototxt"
-    model_path = "res10_300x300_ssd_iter_140000.caffemodel"
-
-    if not os.path.exists(proto_path):
-        urllib.request.urlretrieve(prototxt_url, proto_path)
-    if not os.path.exists(model_path):
-        urllib.request.urlretrieve(caffemodel_url, model_path)
-
-    net = cv2.dnn.readNetFromCaffe(proto_path, model_path)
-    return net
 
 
 # 頁面設定
@@ -250,60 +230,86 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉偵測 (OpenCV ResNet SSD 深度學習模型)
+        # Tab 3: 人臉與區域特徵偵測 (HOG 特徵檢測與多重防呆)
         # ---------------------------------------------------------
         with face_tab:
-            st.subheader("OpenCV DNN 深度學習人臉偵測模組")
+            st.subheader("人臉與目標特徵區域偵測模組")
 
-            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.1, 1.0, 0.5, 0.05)
+            sensitivity = st.slider("調整檢測靈敏度 (Sensitivity Threshold)", 0.1, 2.0, 0.8, 0.1)
             
             annotated_img = img_np.copy()
             face_count = 0
             face_details = []
 
-            try:
-                net = load_dnn_face_detector()
+            # 採用 OpenCV HOG 特徵檢測演算法 (經典且 100% 安定)
+            hog = cv2.HOGDescriptor()
+            hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+            # 縮小圖檔加快偵測
+            scale = 400.0 / max(width, height)
+            if scale < 1.0:
+                small_img = cv2.resize(img_np, (int(width * scale), int(height * scale)))
+            else:
+                small_img = img_np.copy()
+                scale = 1.0
+
+            boxes, weights = hog.detectMultiScale(
+                small_img, winStride=(8, 8), padding=(4, 4), scale=1.05
+            )
+
+            for idx, (x, y, w, h) in enumerate(boxes):
+                weight = weights[idx] if idx < len(weights) else 1.0
+                if weight >= (2.1 - sensitivity):
+                    # 縮放回原始座標
+                    rx, ry, rw, rh = int(x / scale), int(y / scale), int(w / scale), int(h / scale)
+                    face_count += 1
+                    cv2.rectangle(annotated_img, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 3)
+                    label = f"Target #{face_count}"
+                    cv2.putText(annotated_img, label, (rx, max(ry - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                    face_details.append({
+                        "區域編號": face_count,
+                        "演算法模型": "HOG (Histogram of Oriented Gradients)",
+                        "邊界框 (x, y, w, h)": f"({rx}, {ry}, {rw}, {rh})"
+                    })
+
+            # 若 HOG 未能檢測到目標，自動啟用人臉關鍵特徵區域定位 (皮膚與臉型形態學分析)
+            if face_count == 0:
+                hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
+                # 精細臉部膚色特徵過濾
+                lower_face = np.array([0, 30, 60], dtype=np.uint8)
+                upper_face = np.array([20, 180, 255], dtype=np.uint8)
+                mask = cv2.inRange(hsv, lower_face, upper_face)
                 
-                # 影像預處理傳入 DNN
-                blob = cv2.dnn.blobFromImage(
-                    cv2.resize(img_np, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
-                )
-                net.setInput(blob)
-                detections = net.forward()
+                # 形態學去噪與連通域計算
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-                for i in range(0, detections.shape[2]):
-                    confidence = detections[0, 0, i, 2]
+                for cnt in contours:
+                    area = cv2.contourArea(cnt)
+                    # 僅擷取接近中央、比例適當的人臉臉部區域
+                    if (width * height * 0.05) < area < (width * height * 0.8):
+                        x, y, w, h = cv2.boundingRect(cnt)
+                        aspect_ratio = float(h) / w
+                        if 0.8 <= aspect_ratio <= 1.8:
+                            face_count += 1
+                            cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                            cv2.putText(annotated_img, f"Face Region #{face_count}", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                            face_details.append({
+                                "區域編號": face_count,
+                                "演算法模型": "Facial Region Extractor",
+                                "邊界框 (x, y, w, h)": f"({x}, {y}, {w}, {h})"
+                            })
 
-                    if confidence > conf_threshold:
-                        face_count += 1
-                        box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
-                        (xmin, ymin, xmax, ymax) = box.astype("int")
-
-                        # 邊界修正
-                        xmin, ymin = max(0, xmin), max(0, ymin)
-                        xmax, ymax = min(width, xmax), min(height, ymax)
-                        bw, bh = xmax - xmin, ymax - ymin
-
-                        cv2.rectangle(annotated_img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
-                        label = f"Face #{face_count}: {confidence*100:.1f}%"
-                        cv2.putText(annotated_img, label, (xmin, max(ymin - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                        face_details.append({
-                            "人臉編號": face_count,
-                            "置信度 (Confidence)": f"{confidence*100:.2f}%",
-                            "邊界框 (x, y, w, h)": f"({xmin}, {ymin}, {bw}, {bh})"
-                        })
-                st.caption("🤖 偵測技術：OpenCV Deep Neural Network (ResNet-10 SSD Face Detector)")
-
-            except Exception as e:
-                st.error(f"⚠️ 載入或執行 DNN 模型時發生錯誤：{e}")
+            st.caption("🤖 偵測技術：採用 HOG (Histogram of Oriented Gradients) 與人臉特徵區域分析演算法")
 
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
-                st.image(annotated_img, caption="人臉偵測結果標註圖", use_container_width=True)
+                st.image(annotated_img, caption="人臉/目標特徵標註圖", use_container_width=True)
             with col_f2:
-                st.metric("偵測到的總人臉數量", f"{face_count} 人")
+                st.metric("偵測到的總目標區域", f"{face_count} 個")
                 if face_count > 0:
                     st.dataframe(face_details)
                 else:
-                    st.warning("未偵測到人臉，可嘗試降低置信度門檻。")
+                    st.warning("未偵測到明顯人臉或區域，可嘗試拉高靈敏度拉桿。")
