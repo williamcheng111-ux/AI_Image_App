@@ -45,29 +45,18 @@ def load_image(file_bytes: bytes) -> tuple[Image.Image, int, np.ndarray]:
 
 
 @st.cache_resource
-def load_ssd_dnn_detector():
-    """下載並載入高穩定度 OpenCV DNN ResNet-10 SSD 人臉偵測模型。"""
-    proto_url = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
-    model_url = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
+def get_yunet_onnx_model_path():
+    """下載並快取 OpenCV 官方 YuNet ONNX 人臉偵測模型。"""
+    onnx_url = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+    onnx_path = "face_detection_yunet_2023mar.onnx"
 
-    proto_path = "deploy.prototxt"
-    model_path = "res10_300x300_ssd_iter_140000.caffemodel"
-
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    if not os.path.exists(proto_path) or os.path.getsize(proto_path) < 100:
-        req = urllib.request.Request(proto_url, headers=headers)
-        with urllib.request.urlopen(req) as resp, open(proto_path, 'wb') as f:
+    if not os.path.exists(onnx_path) or os.path.getsize(onnx_path) < 10000:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(onnx_url, headers=headers)
+        with urllib.request.urlopen(req) as resp, open(onnx_path, 'wb') as f:
             f.write(resp.read())
 
-    if not os.path.exists(model_path) or os.path.getsize(model_path) < 10000:
-        req = urllib.request.Request(model_url, headers=headers)
-        with urllib.request.urlopen(req) as resp, open(model_path, 'wb') as f:
-            f.write(resp.read())
-
-    # 使用 universal 的 cv2.dnn.readNet
-    net = cv2.dnn.readNet(proto_path, model_path)
-    return net
+    return os.path.abspath(onnx_path)
 
 
 # 頁面設定
@@ -258,53 +247,58 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉偵測 (OpenCV DNN ResNet-10 SSD 模型)
+        # Tab 3: 人臉偵測 (OpenCV ONNX YuNet 深度學習模型)
         # ---------------------------------------------------------
         with face_tab:
-            st.subheader("OpenCV DNN 深度學習人臉偵測模組")
+            st.subheader("OpenCV ONNX YuNet AI 人臉偵測模組")
 
-            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.1, 1.0, 0.45, 0.05)
-            
+            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.1, 1.0, 0.5, 0.05)
+
             annotated_img = img_np.copy()
+            # OpenCV FaceDetectorYN 接收 BGR 格式
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
             face_count = 0
             face_details = []
 
             try:
-                net = load_ssd_dnn_detector()
-                
-                # 影像轉換成 300x300 的 Blob 送入 DNN
-                blob = cv2.dnn.blobFromImage(
-                    cv2.resize(img_np, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
+                model_path = get_yunet_onnx_model_path()
+                detector = cv2.FaceDetectorYN.create(
+                    model=model_path,
+                    config="",
+                    input_size=(width, height),
+                    score_threshold=float(conf_threshold),
+                    nms_threshold=0.3,
+                    top_k=500
                 )
-                net.setInput(blob)
-                detections = net.forward()
 
-                for i in range(0, detections.shape[2]):
-                    confidence = detections[0, 0, i, 2]
+                _, faces = detector.detect(img_bgr)
 
-                    if confidence > conf_threshold:
-                        face_count += 1
-                        box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
-                        (xmin, ymin, xmax, ymax) = box.astype("int")
-
-                        # 邊界限制
+                if faces is not None:
+                    face_count = len(faces)
+                    for idx, face in enumerate(faces):
+                        # 人臉座標 (x, y, w, h)
+                        box = list(map(int, face[0:4]))
+                        confidence = float(face[-1])
+                        
+                        xmin, ymin, bw, bh = box
                         xmin, ymin = max(0, xmin), max(0, ymin)
-                        xmax, ymax = min(width, xmax), min(height, ymax)
-                        bw, bh = xmax - xmin, ymax - ymin
 
-                        cv2.rectangle(annotated_img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
-                        label = f"Face #{face_count}: {confidence*100:.1f}%"
+                        # 畫綠色人臉框與標籤
+                        cv2.rectangle(annotated_img, (xmin, ymin), (xmin + bw, ymin + bh), (0, 255, 0), 3)
+                        label = f"Face #{idx+1}: {confidence*100:.1f}%"
                         cv2.putText(annotated_img, label, (xmin, max(ymin - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                         face_details.append({
-                            "人臉編號": face_count,
+                            "人臉編號": idx + 1,
                             "置信度 (Confidence)": f"{confidence*100:.2f}%",
                             "邊界框 (x, y, w, h)": f"({xmin}, {ymin}, {bw}, {bh})"
                         })
-                st.caption("🤖 偵測技術：OpenCV Deep Neural Network (ResNet-10 SSD Face Detector)")
+
+                st.caption("🤖 偵測技術：OpenCV YuNet Deep Learning Face Detector (ONNX Standard)")
 
             except Exception as e:
-                st.error(f"⚠️ 模型執行失敗：{e}")
+                st.error(f"⚠️ 載入或執行 ONNX 模型時發生錯誤：{e}")
 
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
