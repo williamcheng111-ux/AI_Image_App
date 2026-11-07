@@ -7,10 +7,9 @@ YUNET_MODEL_FILE = "face_detection_yunet_2023mar.onnx"
 @st.cache_resource
 def load_yunet_model():
     if not os.path.exists(YUNET_MODEL_FILE):
-        st.error(f"找不到模型檔案：{YUNET_MODEL_FILE}，請確認已推送到 GitHub！")
         return None
-    
     try:
+        # 只保留最核心的標準參數，絕對不要設定 setPreferableTarget/setPreferableBackend
         detector = cv2.FaceDetectorYN.create(
             model=YUNET_MODEL_FILE,
             config="",
@@ -21,8 +20,7 @@ def load_yunet_model():
         )
         return detector
     except Exception as e:
-        st.error(f"載入 YuNet 模型失敗: {e}")
+        st.error(f"模型初始化失敗: {e}")
         return None
 
-# 調用模型
 face_detector = load_yunet_model()
