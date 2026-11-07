@@ -327,3 +327,4 @@ else:
                 if face_count > 0:
                     st.dataframe(face_details)
                 else:
+                    st.warning("未偵測到人臉，可嘗試調低置信度門檻拉桿。")
