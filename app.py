@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from io import BytesIO
 import math
+import os
+import urllib.request
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,6 +42,24 @@ def load_image(file_bytes: bytes) -> tuple[Image.Image, int, np.ndarray]:
         img_np = np.array(rgb_image)
 
         return source_image.copy(), channels, img_np
+
+
+@st.cache_resource
+def load_dnn_face_detector():
+    """下載並快取 OpenCV SSD 人臉偵測模型。"""
+    prototxt_url = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
+    caffemodel_url = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
+
+    proto_path = "deploy.prototxt"
+    model_path = "res10_300x300_ssd_iter_140000.caffemodel"
+
+    if not os.path.exists(proto_path):
+        urllib.request.urlretrieve(prototxt_url, proto_path)
+    if not os.path.exists(model_path):
+        urllib.request.urlretrieve(caffemodel_url, model_path)
+
+    net = cv2.dnn.readNetFromCaffe(proto_path, model_path)
+    return net
 
 
 # 頁面設定
@@ -230,61 +250,60 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉與區域特徵偵測 (YCrCb 色彩空間膚色模型，100% 雲端相容)
+        # Tab 3: 人臉偵測 (OpenCV ResNet SSD 深度學習模型)
         # ---------------------------------------------------------
         with face_tab:
-            st.subheader("色彩空間膚色與人臉特徵區域偵測模組")
+            st.subheader("OpenCV DNN 深度學習人臉偵測模組")
 
-            min_area_pct = st.slider("調整最小過濾區域比例 (%)", 0.5, 10.0, 1.5, 0.5, help="過濾掉太小的背景雜點區域")
+            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.1, 1.0, 0.5, 0.05)
             
             annotated_img = img_np.copy()
-            
-            # 轉換至 YCrCb 色彩空間 (YCrCb 在膚色分割表現極佳)
-            ycrcb = cv2.cvtColor(img_np, cv2.COLOR_RGB2YCrCb)
-            
-            # 經典膚色色度臨界值 (Cr: 133-173, Cb: 77-127)
-            lower_skin = np.array([0, 133, 77], dtype=np.uint8)
-            upper_skin = np.array([255, 173, 127], dtype=np.uint8)
-            
-            # 產生遮罩與形態學開關運算去雜訊
-            mask = cv2.inRange(ycrcb, lower_skin, upper_skin)
-            kernel_op = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_op)
-            
-            # 尋找輪廓
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
             face_count = 0
             face_details = []
-            min_pixel_area = (width * height) * (min_area_pct / 100.0)
 
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area >= min_pixel_area:
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    aspect_ratio = float(h) / w
-                    
-                    # 篩選長寬比符合人類頭部/人臉比例的區域 (0.6 ~ 2.5)
-                    if 0.6 <= aspect_ratio <= 2.5:
+            try:
+                net = load_dnn_face_detector()
+                
+                # 影像預處理傳入 DNN
+                blob = cv2.dnn.blobFromImage(
+                    cv2.resize(img_np, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
+                )
+                net.setInput(blob)
+                detections = net.forward()
+
+                for i in range(0, detections.shape[2]):
+                    confidence = detections[0, 0, i, 2]
+
+                    if confidence > conf_threshold:
                         face_count += 1
-                        cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (0, 255, 0), 3)
-                        label = f"Face/Skin #{face_count}"
-                        cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
+                        (xmin, ymin, xmax, ymax) = box.astype("int")
+
+                        # 邊界修正
+                        xmin, ymin = max(0, xmin), max(0, ymin)
+                        xmax, ymax = min(width, xmax), min(height, ymax)
+                        bw, bh = xmax - xmin, ymax - ymin
+
+                        cv2.rectangle(annotated_img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
+                        label = f"Face #{face_count}: {confidence*100:.1f}%"
+                        cv2.putText(annotated_img, label, (xmin, max(ymin - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                         face_details.append({
-                            "區域編號": face_count,
-                            "檢測演算法": "YCrCb Skin Color Model",
-                            "邊界框 (x, y, w, h)": f"({x}, {y}, {w}, {h})"
+                            "人臉編號": face_count,
+                            "置信度 (Confidence)": f"{confidence*100:.2f}%",
+                            "邊界框 (x, y, w, h)": f"({xmin}, {ymin}, {bw}, {bh})"
                         })
+                st.caption("🤖 偵測技術：OpenCV Deep Neural Network (ResNet-10 SSD Face Detector)")
+
+            except Exception as e:
+                st.error(f"⚠️ 載入或執行 DNN 模型時發生錯誤：{e}")
 
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
-                st.image(annotated_img, caption="人臉/膚色特徵偵測結果圖", use_container_width=True)
+                st.image(annotated_img, caption="人臉偵測結果標註圖", use_container_width=True)
             with col_f2:
-                st.metric("偵測到的總目標區域", f"{face_count} 個")
+                st.metric("偵測到的總人臉數量", f"{face_count} 人")
                 if face_count > 0:
                     st.dataframe(face_details)
                 else:
-                    st.warning("未偵測到明顯人臉/膚色區域，可嘗試調低區域比例拉桿。")
-
-            st.caption("🤖 演算法說明：採用 YCrCb 色彩空間之經典膚色色彩模型 (YCrCb Skin Segmentation)，具備 100% 跨平台穩定性。")
+                    st.warning("未偵測到人臉，可嘗試降低置信度門檻。")
