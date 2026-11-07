@@ -44,61 +44,27 @@ def load_image(file_bytes: bytes) -> tuple[Image.Image, int, np.ndarray]:
         return source_image.copy(), channels, img_np
 
 
-def detect_faces_pure_python(img_rgb: np.ndarray, threshold: float = 0.5):
-    """
-    純 Python / NumPy 人臉與特徵區域幾何定位引擎
-    完全不依賴 cv2 C++ 類別，100% 相容所有 Linux 雲端環境
-    """
-    h, w, _ = img_rgb.shape
+def get_haar_cascade_detector():
+    """下載並載入 Haar-Cascade 模型的強健函式"""
+    xml_name = "haarcascade_frontalface_default.xml"
+    xml_url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
     
-    # 1. 膚色與人臉幾何特徵區域提取 (YCrCb 色彩空間)
-    img_ycrcb = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2YCrCb)
-    
-    # 膚色臨界範圍 (Cr: 133-173, Cb: 77-127)
-    lower_skin = np.array([0, 133, 77], dtype=np.uint8)
-    upper_skin = np.array([255, 173, 127], dtype=np.uint8)
-    skin_mask = cv2.inRange(img_ycrcb, lower_skin, upper_skin)
-    
-    # 形態學閉運算填補孔洞
-    kernel = np.ones((9, 9), np.uint8)
-    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel)
-    
-    # 計算連通域標籤 (純 OpenCV C 核心 API，相容性 100%)
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(skin_mask, connectivity=8)
-    
-    detections = []
-    
-    for i in range(1, num_labels):
-        x = stats[i, cv2.CC_STAT_LEFT]
-        y = stats[i, cv2.CC_STAT_TOP]
-        bw = stats[i, cv2.CC_STAT_WIDTH]
-        bh = stats[i, cv2.CC_STAT_HEIGHT]
-        area = stats[i, cv2.CC_STAT_AREA]
-        
-        # 排除過小或過大的非人臉區域
-        if area < (w * h * 0.015) or area > (w * h * 0.85):
-            continue
+    # 檢查並下載模型檔
+    if not os.path.exists(xml_name) or os.path.getsize(xml_name) < 1000:
+        try:
+            req = urllib.request.Request(xml_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response, open(xml_name, 'wb') as out_file:
+                out_file.write(response.read())
+        except Exception:
+            pass
+
+    # 載入 CascadeClassifier
+    if os.path.exists(xml_name):
+        detector = cv2.CascadeClassifier(os.path.abspath(xml_name))
+        if not detector.empty():
+            return detector
             
-        aspect_ratio = float(bh) / bw
-        
-        # 篩選人臉長寬比例 (通常介於 0.75 到 2.2 之間)
-        if 0.75 <= aspect_ratio <= 2.2:
-            # 計算該區域的膚色密度作為信心度指標
-            roi_mask = skin_mask[y:y+bh, x:x+bw]
-            skin_density = np.sum(roi_mask > 0) / (bw * bh)
-            
-            # 將膚色密度與面積權重計算為 Confidence Score
-            confidence = min(0.98, max(0.40, skin_density * 0.85 + (area / (w * h)) * 0.15))
-            
-            if confidence >= threshold:
-                detections.append({
-                    "box": (x, y, bw, bh),
-                    "confidence": confidence
-                })
-                
-    # 依照信心度由高至低排序
-    detections.sort(key=lambda item: item["confidence"], reverse=True)
-    return detections
+    return None
 
 
 # 頁面設定
@@ -289,35 +255,49 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉偵測 (純 Python/NumPy 高實用性特徵定位)
+        # Tab 3: 人臉偵測 (OpenCV Haar-Cascade 經典特徵辨識演算法)
         # ---------------------------------------------------------
         with face_tab:
-            st.subheader("AI 人臉與特徵區域分析模組")
+            st.subheader("OpenCV Haar-Cascade AI 人臉偵測模組")
 
-            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.1, 1.0, 0.45, 0.05)
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                scale_factor = st.slider("調整檢測縮放倍率 (Scale Factor)", 1.05, 1.40, 1.10, 0.05, help="越小越精細")
+            with col_s2:
+                min_neighbors = st.slider("調整相鄰矩形門檻 (Min Neighbors)", 1, 10, 4, 1, help="越大越嚴格")
             
             annotated_img = img_np.copy()
-            detections = detect_faces_pure_python(img_np, threshold=conf_threshold)
+            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+            # 直方圖均化強化人臉對比
+            gray = cv2.equalizeHist(gray)
 
-            face_count = len(detections)
+            detector = get_haar_cascade_detector()
+            face_count = 0
             face_details = []
 
-            for idx, item in enumerate(detections):
-                x, y, bw, bh = item["box"]
-                confidence = item["confidence"]
+            if detector is not None:
+                faces = detector.detectMultiScale(
+                    gray,
+                    scaleFactor=scale_factor,
+                    minNeighbors=int(min_neighbors),
+                    minSize=(40, 40)
+                )
 
-                # 畫 Bounding Box 標註
-                cv2.rectangle(annotated_img, (x, y), (x + bw, y + bh), (0, 255, 0), 3)
-                label = f"Face #{idx+1}: {confidence*100:.1f}%"
-                cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                face_count = len(faces)
+                for idx, (x, y, bw, bh) in enumerate(faces):
+                    # 畫人臉邊界框
+                    cv2.rectangle(annotated_img, (x, y), (x + bw, y + bh), (0, 255, 0), 3)
+                    label = f"Face #{idx+1}"
+                    cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-                face_details.append({
-                    "人臉編號": idx + 1,
-                    "置信度 (Confidence)": f"{confidence*100:.2f}%",
-                    "邊界框 (x, y, w, h)": f"({x}, {y}, {bw}, {bh})"
-                })
-
-            st.caption("🤖 偵測技術：Pure Python / NumPy Facial Feature & Geometry Detector (100% 雲端原生支援)")
+                    face_details.append({
+                        "人臉編號": idx + 1,
+                        "演算法模型": "OpenCV Haar-Cascade Detector",
+                        "邊界框 (x, y, w, h)": f"({x}, {y}, {bw}, {bh})"
+                    })
+                st.caption("🤖 偵測技術：OpenCV Haar-Cascade 人臉特徵檢測演算法")
+            else:
+                st.error("無法載入人臉偵測模型。")
 
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
@@ -327,4 +307,4 @@ else:
                 if face_count > 0:
                     st.dataframe(face_details)
                 else:
-                    st.warning("未偵測到人臉，可嘗試調低置信度門檻拉桿。")
+                    st.warning("未偵測到人臉，可嘗試調低 Min Neighbors 門檻。")
