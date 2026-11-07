@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 import streamlit as st
-import mediapipe as mp
 
 # 限定可上傳的副檔名與格式
 ALLOWED_EXTENSIONS = ("png", "jpg", "jpeg", "bmp")
@@ -231,58 +230,44 @@ else:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
         # ---------------------------------------------------------
-        # Tab 3: 人臉偵測 (MediaPipe Face Detection)
+        # Tab 3: 人臉偵測 (OpenCV Haar-Cascade 經典特徵辨識演算法)
         # ---------------------------------------------------------
         with face_tab:
-            st.subheader("MediaPipe 深層學習人臉偵測器")
+            st.subheader("OpenCV Haar-Cascade 人臉偵測模組")
 
-            conf_threshold = st.slider("調整偵測置信度門檻 (Confidence Threshold)", 0.0, 1.0, 0.5, 0.05)
+            scale_factor = st.slider("調整檢測縮放倍率 (Scale Factor)", 1.05, 1.50, 1.10, 0.05, help="數值越小檢測越精細，但速度稍慢")
+            min_neighbors = st.slider("調整相鄰矩形門檻 (Min Neighbors)", 1, 10, 5, 1, help="數值越高越嚴格，可減少誤判")
 
             annotated_img = img_np.copy()
+            gray_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
 
-            # 使用安全防呆載入 mediapipe face_detection 模組
-            try:
-                mp_face_detection = mp.solutions.face_detection
-                
-                with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=conf_threshold) as face_detector:
-                    results = face_detector.process(annotated_img)
+            # 載入 OpenCV 原生內建 Haar-Cascade 人臉分類器
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            faces = face_cascade.detectMultiScale(gray_img, scaleFactor=scale_factor, minNeighbors=min_neighbors, minSize=(30, 30))
 
-                    face_count = 0
-                    face_details = []
+            face_count = len(faces)
+            face_details = []
 
-                    if results.detections:
-                        face_count = len(results.detections)
-                        h, w, _ = annotated_img.shape
+            for idx, (x, y, w, h) in enumerate(faces):
+                # 繪製綠色 Bounding Box 邊界框
+                cv2.rectangle(annotated_img, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                label = f"Face #{idx+1}"
+                cv2.putText(annotated_img, label, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-                        for idx, detection in enumerate(results.detections):
-                            score = detection.score[0]
-                            bboxC = detection.location_data.relative_bounding_box
+                face_details.append({
+                    "人臉編號": idx + 1,
+                    "辨識模型": "Haar-Cascade Feature Detector",
+                    "邊界框 (x, y, w, h)": f"({x}, {y}, {w}, {h})"
+                })
 
-                            xmin = int(bboxC.xmin * w)
-                            ymin = int(bboxC.ymin * h)
-                            bw = int(bboxC.width * w)
-                            bh = int(bboxC.height * h)
+            col_f1, col_f2 = st.columns([2, 1])
+            with col_f1:
+                st.image(annotated_img, caption="人臉偵測標註圖 (Haar-Cascade Bounding Boxes)", use_container_width=True)
+            with col_f2:
+                st.metric("偵測到的總人臉數量", f"{face_count} 人")
+                if face_count > 0:
+                    st.dataframe(face_details)
+                else:
+                    st.warning("未偵測到人臉，可嘗試調低 Min Neighbors 或換張正面清晰的照片。")
 
-                            # 畫邊界框與標籤
-                            cv2.rectangle(annotated_img, (xmin, ymin), (xmin + bw, ymin + bh), (0, 255, 0), 3)
-                            label = f"Face #{idx+1}: {score*100:.1f}%"
-                            cv2.putText(annotated_img, label, (xmin, max(ymin - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                            face_details.append({
-                                "人臉編號": idx + 1,
-                                "置信度 (Confidence)": f"{score*100:.2f}%",
-                                "邊界框 (x, y, w, h)": f"({xmin}, {ymin}, {bw}, {bh})"
-                            })
-
-                    col_f1, col_f2 = st.columns([2, 1])
-                    with col_f1:
-                        st.image(annotated_img, caption="人臉偵測結果標註圖", use_container_width=True)
-                    with col_f2:
-                        st.metric("偵測到的總人臉數量", f"{face_count} 人")
-                        if face_count > 0:
-                            st.dataframe(face_details)
-                        else:
-                            st.warning("未偵測到人臉，可嘗試調低置信度門檻。")
-            
-            except AttributeError:
-                st.error("⚠️ 偵測到 MediaPipe 版本不支援 solutions 模組，請在 Terminal 執行 `pip install mediapipe --upgrade` 升級套件。")
+            st.caption("🤖 演算法說明：本模組採用經典 Haar-Cascade 物件檢測演算法，完全相容所有 Python 環境，無需額外外部 AI 模型套件。")
