@@ -62,9 +62,9 @@ def get_yunet_onnx_model_path() -> str:
 # 頁面設定
 st.set_page_config(page_title="AI 互動式影像處理與人臉分析工具", page_icon="📷", layout="wide")
 
-# 側邊欄
+# 側邊欄（已移除 "1."）
 with st.sidebar:
-    st.header("1. 影像載入與解析")
+    st.header("影像載入與解析")
     uploaded_file = st.file_uploader(
         "選擇圖片",
         type=list(ALLOWED_EXTENSIONS),
@@ -234,10 +234,12 @@ else:
                     with col_i2:
                         st.image(filtered_img, caption="濾波後結果", width="stretch")
 
+                    # --- 放大的 PSNR 顯示卡片 ---
+                    st.markdown("---")
                     if psnr == float('inf'):
-                        st.success("📊 峰值信噪比 (PSNR): `∞ dB (完全無失真)`")
+                        st.metric("📊 峰值信噪比 (PSNR)", "∞ dB", delta="完全無失真")
                     else:
-                        st.info(f"📊 峰值信噪比 (PSNR): `{psnr:.2f} dB`")
+                        st.metric("📊 峰值信噪比 (PSNR)", f"{psnr:.2f} dB")
 
                     with st.expander("📐 查看 PSNR 計算公式與說明"):
                         st.latex(r"MSE = \frac{1}{3 m n} \sum_{c=1}^{3} \sum_{i=0}^{m-1} \sum_{j=0}^{n-1} [I(i,j,c) - K(i,j,c)]^2")
