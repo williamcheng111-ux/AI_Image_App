@@ -62,7 +62,7 @@ def get_yunet_onnx_model_path() -> str:
 # 頁面設定
 st.set_page_config(page_title="AI 互動式影像處理與人臉分析工具", page_icon="📷", layout="wide")
 
-# 側邊欄（已移除 "1."）
+# 側邊欄
 with st.sidebar:
     st.header("影像載入與解析")
     uploaded_file = st.file_uploader(
@@ -131,16 +131,31 @@ else:
                 st.pyplot(fig)
 
             elif mode == "RGB 獨立通道":
-                R, G, B = img_np[:, :, 0], img_np[:, :, 1], img_np[:, :, 2]
+                # 建立真實 RGB 色彩顯示圖像（非灰階）
+                img_r = np.zeros_like(img_np)
+                img_r[:, :, 0] = img_np[:, :, 0]  # 純紅通道
+
+                img_g = np.zeros_like(img_np)
+                img_g[:, :, 1] = img_np[:, :, 1]  # 純綠通道
+
+                img_b = np.zeros_like(img_np)
+                img_b[:, :, 2] = img_np[:, :, 2]  # 純藍通道
+
                 fig, axes = plt.subplots(2, 3, figsize=(15, 7))
 
-                channels_data = [("Red Channel", R, 'red'), ("Green Channel", G, 'green'), ("Blue Channel", B, 'blue')]
-                for idx, (title, ch_img, color_code) in enumerate(channels_data):
-                    axes[0, idx].imshow(ch_img, cmap='gray')
+                channels_data = [
+                    ("Red Channel", img_r, img_np[:, :, 0], 'red'),
+                    ("Green Channel", img_g, img_np[:, :, 1], 'green'),
+                    ("Blue Channel", img_b, img_np[:, :, 2], 'blue')
+                ]
+                for idx, (title, color_img, single_ch, color_code) in enumerate(channels_data):
+                    # 直接顯示真實色彩影像
+                    axes[0, idx].imshow(color_img)
                     axes[0, idx].set_title(title)
                     axes[0, idx].axis("off")
 
-                    hist = cv2.calcHist([ch_img], [0], None, [256], [0, 256])
+                    # 直方圖
+                    hist = cv2.calcHist([single_ch], [0], None, [256], [0, 256])
                     axes[1, idx].plot(hist, color=color_code)
                     axes[1, idx].set_xlim([0, 256])
                     axes[1, idx].set_title(f"{title} Histogram")
@@ -248,7 +263,7 @@ else:
             except Exception as e:
                 st.error(f"⚠️ 解析矩陣失敗：請確保格式正確，輸入皆為數字。（訊息: {e}）")
 
-       # ---------------------------------------------------------
+        # ---------------------------------------------------------
         # Tab 3: 人臉偵測 (OpenCV ONNX YuNet 深度學習模型)
         # ---------------------------------------------------------
         with face_tab:
